@@ -275,7 +275,7 @@ textarea.field { resize: vertical; min-height: 76px; line-height: 1.7; }
   .app-bar { padding: var(--s3) var(--s4); }
   .app-body { padding: var(--s5) var(--s4) var(--s10); }
   .row { flex-wrap: wrap; }
-  .row-meta { margin-left: 0; width: 100%; }
+  .row-meta { margin-left: 0; width: 100%; flex-wrap: wrap; }
 }
 
 /* 見本データの注記（アクセントの縦線は使わない＝AIっぽく見えるため） */
