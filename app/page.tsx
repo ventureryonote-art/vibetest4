@@ -1,79 +1,66 @@
 // ─────────────────────────────────────────────────────────
 // これは「業務アプリの画面」です。宣伝ページ（LP）ではありません。
 //
-// /build を実行すると、docs/03_spec.md にそって
-// この構造を保ったまま、あなたの題材のツールに作り替えられます。
+// 題材: 検査結果が返ってきた患者さんへの、電話連絡の待ちリスト
+//   docs/03_spec.md にそって作っています。
 //
 // 画面の骨格（この形は崩さない）:
 //   左メニュー（.side）＋ 上部バー（.topbar）＋ 本体（.content）
 //   一覧 / 新規登録 / 設定 の3画面を view で切り替える
+//
+// ⚠ 氏名・電話番号・検査値は保存しません。患者番号（またはイニシャル）までです。
 // ─────────────────────────────────────────────────────────
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
 // ═══════════════════════════════════════════════════════════
-//  画面の型 ── ここだけ選び直せば、見た目と並び方が変わります
-//  /build が docs/03_spec.md の「0. 画面の型」を見てここを設定します。
-//  ⚠ 新しいCSSは書かない。下の選択肢から選ぶこと。
+//  画面の型 ── docs/03_spec.md「0. 画面の型」のとおり
 // ═══════════════════════════════════════════════════════════
 
-/** 色み。業種の空気に合わせる
- *  "pine"   教育・サービス・その他（初期値）
- *  "indigo" 士業・不動産・BtoB
- *  "clay"   建設・工務店・現場仕事
- *  "sea"    医療・介護・公共
- *  "wine"   飲食・小売・美容
- */
-const TONE = "pine";
+/** 色み。内科なので "sea"（医療・介護・公共） */
+const TONE = "sea";
 
-/** 密度。1日に見る件数で決める
- *  "compact" 1日20件以上（多くの行を1画面に）
- *  "normal"  ふつう（初期値）
- *  "roomy"   1日5件以下で、1件が重い（ゆったり）
- */
+/** 密度。1日10名前後なので "normal" */
 const DENSITY = "normal";
 
-/** 画面の型。3行目「何が一覧で見られると助かるか」で決める
- *  "queue" 待たせているものを、古い順に片づける（問い合わせ・依頼・返信）
- *  "stage" いくつかの段階を順に進んでいく（査定→撮影→値付け→出品）
- *  "due"   期限がある（締切・訪問予定・提出物・更新期限）
- */
+/** 画面の型。「まだ電話していない人を、結果が届いた順に片づける」ので "queue" */
 const LAYOUT: "queue" | "stage" | "due" = "queue";
 
-/** 数え方。件 / 名 / 棟 / 台 / 点 / 本 など、その仕事の言葉で */
-const UNIT = "件";
+/** 数え方。数えるのは電話をかける相手なので「名」 */
+const UNIT = "名";
 
-/** 区分の選択肢。LAYOUT が "stage" のときは、これが「段階」になる（順番どおりに並ぶ） */
-const CATEGORIES = ["LINE", "電話", "メール", "紹介"];
+/** 検査の区分 */
+const CATEGORIES = ["血液", "尿", "画像", "その他"];
 
 // ═══════════════════════════════════════════════════════════
 
-/** 1件のデータ。/build でこの項目名を題材に合わせて変える */
+/** 1件のデータ ＝ 検査結果の連絡待ち1名 */
 type Record = {
   id: string;
-  name: string;      // 主たる名前（顧客名・品名など）
-  category: string;  // 区分／段階／種別
-  note: string;      // メモ
-  date: string;      // YYYY-MM-DD（queue=受けた日 / stage=受け入れた日 / due=期限）
-  done: boolean;     // 片づいたか
+  patient: string;   // 患者番号（またはイニシャル）※氏名は入れない
+  category: string;  // 検査の区分
+  note: string;      // ひとこと（連絡の段取り）
+  date: string;      // YYYY-MM-DD 結果が届いた日
+  missed: boolean;   // 不在でかけ直しになっているか
+  done: boolean;     // 連絡できたか
 };
 
 type View = "list" | "new" | "settings";
 type Filter = "open" | "done" | "all";
 
-const KEY = "starter-records";
-const NAME_KEY = "starter-appname";
+const KEY = "clinic-callbacks";
+const NAME_KEY = "clinic-appname";
 
 /** 画面の型ごとの言葉。ここを直せば画面じゅうの文言が揃って変わる */
 const TEXT = {
   queue: {
-    sub: "未対応のものが、待たせている順に並びます",
-    open: "未対応", done: "対応済",
-    toTo: "対応済みにする", toBack: "未対応に戻す",
-    dateLabel: "受けた日", catLabel: "区分",
-    stat2: "3日以上 放置",
-    headOpen: "未対応（待たせている順）",
+    sub: "まだ電話していない方が、結果が届いた順に並びます",
+    open: "未連絡", done: "連絡済み",
+    toTo: "連絡できた", toBack: "未連絡に戻す",
+    dateLabel: "結果が届いた日", catLabel: "検査の区分",
+    stat2: "3日以上 待ち",
+    headOpen: "未連絡（届いた順）",
   },
   stage: {
     sub: "どの段階で止まっているかが分かります",
@@ -93,7 +80,7 @@ const TEXT = {
   },
 }[LAYOUT];
 
-/** n日前の日付。マイナスを渡すとn日後（"due" の見本データで使う） */
+/** n日前の日付。マイナスを渡すとn日後 */
 const ago = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 const today = () => ago(0);
 
@@ -103,38 +90,37 @@ const diff = (d: string) =>
     (new Date(d + "T00:00:00").getTime() - new Date(today() + "T00:00:00").getTime()) / 86400000
   );
 
-/** 何日待たせているか（"queue" / "stage" 用） */
+/** 何日待たせているか */
 const waiting = (d: string) => Math.max(0, -diff(d));
 
 /**
- * 見本データ。/build でこの中身を題材に合わせて入れ替える。
- * ⚠ 実在の人名・会社名・連絡先は使わない。件数は12〜15件（少ないと画面が寂しく見える）
+ * 見本データ。すべて架空の患者番号です。
+ * ⚠ 氏名・連絡先・検査値は入れません。
  */
 const SAMPLE: Record[] = [
-  { id: "s01", name: "佐藤さん（中2）", category: "LINE",   note: "数学と英語、週2希望。木曜以外",        date: ago(0),  done: false },
-  { id: "s02", name: "田村さん（小5）", category: "電話",   note: "折り返し希望 18時以降",               date: ago(1),  done: false },
-  { id: "s03", name: "鈴木さん（高1）", category: "紹介",   note: "在籍生のご家族から。物理を見てほしい",  date: ago(1),  done: false },
-  { id: "s04", name: "中村さん（中3）", category: "メール", note: "受験相談。志望校はまだ決めていない",   date: ago(2),  done: false },
-  { id: "s05", name: "渡辺さん（中2）", category: "紹介",   note: "平日夕方のみ。部活が19時まで",         date: ago(3),  done: false },
-  { id: "s06", name: "小林さん（中1）", category: "LINE",   note: "体験授業の日程を調整中",              date: ago(4),  done: false },
-  { id: "s07", name: "松本さん（小4）", category: "メール", note: "兄弟割引について聞かれている",         date: ago(5),  done: false },
-  { id: "s08", name: "山口さん（小6）", category: "電話",   note: "料金表を送ってほしいとのこと",         date: ago(6),  done: false },
-  { id: "s09", name: "吉田さん（高2）", category: "LINE",   note: "夏期講習の残席を確認したい",           date: ago(9),  done: false },
-  { id: "s10", name: "井上さん（中3）", category: "電話",   note: "面談日程を確定。来週火曜18時",         date: ago(12), done: true },
-  { id: "s11", name: "清水さん（高3）", category: "LINE",   note: "資料送付済み。返事待ち",              date: ago(14), done: true },
-  { id: "s12", name: "森さん（小3）",   category: "紹介",   note: "体験のあと入会。4月から週1",          date: ago(16), done: true },
-  { id: "s13", name: "大野さん（中1）", category: "メール", note: "他塾と比較検討中とのこと",            date: ago(18), done: true },
-  { id: "s14", name: "岡田さん（高1）", category: "LINE",   note: "今回は見送りとご連絡あり",            date: ago(21), done: true },
+  { id: "s01", patient: "No.10523", category: "画像", note: "次回外来の予約も一緒に取る",          date: ago(0),  missed: false, done: false },
+  { id: "s02", patient: "No.10519", category: "血液", note: "日中は勤務中。19時以降なら出られる",   date: ago(1),  missed: false, done: false },
+  { id: "s03", patient: "No.10517", category: "尿",   note: "1回目つながらず。夕方にかけ直す",      date: ago(2),  missed: true,  done: false },
+  { id: "s04", patient: "No.10511", category: "血液", note: "説明が長くなるので午後の診察の後で",    date: ago(3),  missed: false, done: false },
+  { id: "s05", patient: "No.10508", category: "血液", note: "ご家族に伝言済み。折り返し待ち",        date: ago(4),  missed: true,  done: false },
+  { id: "s06", patient: "No.10502", category: "その他", note: "再検査の案内が必要。来院日を相談",    date: ago(5),  missed: false, done: false },
+  { id: "s07", patient: "No.10496", category: "画像", note: "紹介状の準備ができてから連絡する",      date: ago(6),  missed: false, done: false },
+  { id: "s08", patient: "No.10488", category: "尿",   note: "留守番電話にメッセージを残した",        date: ago(8),  missed: true,  done: false },
+  { id: "s09", patient: "No.10482", category: "血液", note: "健診の再検査分。番号は受付の控えから",  date: ago(10), missed: false, done: false },
+  { id: "s10", patient: "No.10474", category: "血液", note: "本人に説明済み。次回は3か月後",         date: ago(12), missed: false, done: true },
+  { id: "s11", patient: "No.10468", category: "画像", note: "総合病院へ紹介。予約日まで案内した",    date: ago(14), missed: false, done: true },
+  { id: "s12", patient: "No.10461", category: "尿",   note: "問題なしと伝えた。次回外来まで様子見",  date: ago(16), missed: false, done: true },
+  { id: "s13", patient: "No.10455", category: "その他", note: "ご家族が来院された際に直接説明",      date: ago(18), missed: false, done: true },
+  { id: "s14", patient: "No.10447", category: "血液", note: "薬の量を調整。処方は次回受診時に",      date: ago(21), missed: false, done: true },
 ];
 
-/** 一覧をどう束ねるか。LAYOUT ごとに変わる */
+/** 一覧をどう束ねるか */
 type Group = { key: string; label: string; mark?: "late" | "now"; items: Record[] };
 
 function grouped(list: Record[], filter: Filter): Group[] {
   const head = filter === "open" ? TEXT.headOpen : filter === "done" ? TEXT.done : "すべて";
 
   if (LAYOUT === "stage" && filter === "open") {
-    // 段階ごとに束ねる。CATEGORIES の順に並べ、中身が無い段階は出さない
     return CATEGORIES.map((c) => ({
       key: c,
       label: c,
@@ -163,7 +149,7 @@ function grouped(list: Record[], filter: Filter): Group[] {
   return [{ key: "all", label: head, items: list }];
 }
 
-/** 行の右に出す小さなバッジ。LAYOUT ごとに意味が変わる */
+/** 行の右に出す、待たせている日数のバッジ */
 function rowBadge(r: Record): { text: string; kind: "warn" | "danger" } | null {
   if (r.done) return null;
   if (LAYOUT === "due") {
@@ -179,7 +165,7 @@ function rowBadge(r: Record): { text: string; kind: "warn" | "danger" } | null {
 
 export default function Home() {
   const [items, setItems] = useState<Record[]>([]);
-  const [appName, setAppName] = useState("お問い合わせ管理");
+  const [appName, setAppName] = useState("検査結果 連絡リスト");
   const [loaded, setLoaded] = useState(false);
 
   const [view, setView] = useState<View>("list");
@@ -187,7 +173,7 @@ export default function Home() {
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState<Record | null>(null);
 
-  const [form, setForm] = useState({ name: "", category: CATEGORIES[0], note: "", date: today() });
+  const [form, setForm] = useState({ patient: "", category: CATEGORIES[0], note: "", date: today() });
 
   useEffect(() => {
     try {
@@ -207,7 +193,7 @@ export default function Home() {
     localStorage.setItem(NAME_KEY, appName);
   }, [items, appName, loaded]);
 
-  // 見本データのまま触っていない状態か（1件でも足す・消すと false になる）
+  // 見本データのまま触っていない状態か（1名でも足す・消すと false になる）
   const isSample = items.length === SAMPLE.length && items.every((i) => i.id.startsWith("s"));
 
   const counts = useMemo(
@@ -219,7 +205,7 @@ export default function Home() {
     [items]
   );
 
-  /** 2つ目の統計。LAYOUT で意味が変わる */
+  /** 2つ目の統計。3日以上待たせている方の数 */
   const attention = useMemo(() => {
     const open = items.filter((i) => !i.done);
     if (LAYOUT === "due") return open.filter((i) => diff(i.date) < 0).length;
@@ -231,24 +217,24 @@ export default function Home() {
     const k = q.trim().toLowerCase();
     return items
       .filter((i) => (filter === "all" ? true : filter === "open" ? !i.done : i.done))
-      .filter((i) => !k || (i.name + i.note + i.category).toLowerCase().includes(k))
+      .filter((i) => !k || (i.patient + i.note + i.category).toLowerCase().includes(k))
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [items, filter, q]);
 
   const groups = useMemo(() => grouped(shown, filter), [shown, filter]);
 
   function resetForm() {
-    setForm({ name: "", category: CATEGORIES[0], note: "", date: today() });
+    setForm({ patient: "", category: CATEGORIES[0], note: "", date: today() });
     setEditing(null);
   }
 
   function save() {
-    const name = form.name.trim();
-    if (!name) return;
+    const patient = form.patient.trim();
+    if (!patient) return;
     if (editing) {
-      setItems(items.map((i) => (i.id === editing.id ? { ...i, ...form, name } : i)));
+      setItems(items.map((i) => (i.id === editing.id ? { ...i, ...form, patient } : i)));
     } else {
-      setItems([...items, { id: String(Date.now()), ...form, name, done: false }]);
+      setItems([...items, { id: String(Date.now()), ...form, patient, missed: false, done: false }]);
     }
     resetForm();
     setView("list");
@@ -256,11 +242,18 @@ export default function Home() {
 
   function startEdit(r: Record) {
     setEditing(r);
-    setForm({ name: r.name, category: r.category, note: r.note, date: r.date });
+    setForm({ patient: r.patient, category: r.category, note: r.note, date: r.date });
     setView("new");
   }
 
-  const toggle = (id: string) => setItems(items.map((i) => (i.id === id ? { ...i, done: !i.done } : i)));
+  /** 連絡できた／未連絡に戻す。連絡できたら「不在」の印は消す */
+  const toggle = (id: string) =>
+    setItems(items.map((i) => (i.id === id ? { ...i, done: !i.done, missed: i.done ? i.missed : false } : i)));
+
+  /** 不在だった／不在を取り消す。一覧からは消さず、印だけ付ける */
+  const toggleMissed = (id: string) =>
+    setItems(items.map((i) => (i.id === id ? { ...i, missed: !i.missed } : i)));
+
   const remove = (id: string) => setItems(items.filter((i) => i.id !== id));
 
   const NAV: { k: View; label: string; count?: number }[] = [
@@ -271,7 +264,7 @@ export default function Home() {
 
   const titles: { [K in View]: [string, string] } = {
     list: ["一覧", TEXT.sub],
-    new: [editing ? "編集" : "新規登録", "入力して保存すると、一覧に追加されます"],
+    new: [editing ? "編集" : "新規登録", "結果が届いた分を1名ずつ登録します"],
     settings: ["設定", "表示名の変更と、データの初期化"],
   };
 
@@ -297,7 +290,7 @@ export default function Home() {
             </button>
           ))}
         </div>
-        <div className="side-foot">/build で、あなたの題材に作り替わります</div>
+        <div className="side-foot">氏名・電話番号・検査値は保存しません</div>
       </nav>
 
       {/* ───────── 本体 ───────── */}
@@ -326,13 +319,13 @@ export default function Home() {
               <div className="stats">
                 <div className="stat"><div className="n accent">{counts.open}</div><div className="l">{TEXT.open}</div></div>
                 <div className="stat"><div className="n">{attention}</div><div className="l">{TEXT.stat2}</div></div>
-                <div className="stat"><div className="n">{counts.all}</div><div className="l">全{UNIT}</div></div>
+                <div className="stat"><div className="n">{counts.all}</div><div className="l">ぜんぶ</div></div>
               </div>
 
               <div className="filters">
                 <div className="search">
                   <input className="field" value={q} onChange={(e) => setQ(e.target.value)}
-                    placeholder="名前・メモで検索" />
+                    placeholder="患者番号・ひとことで検索" />
                 </div>
                 <div className="seg">
                   {(["open", "done", "all"] as Filter[]).map((f) => (
@@ -353,9 +346,10 @@ export default function Home() {
                       <span className="count">0 {UNIT}</span>
                     </div>
                     <div className="empty">
-                      <div className="t">{q ? "見つかりませんでした" : "ここに表示するものがありません"}</div>
+                      <div className="t">{q ? "見つかりませんでした" : "電話を待っている方はいません"}</div>
                       <div className="d">
-                        {q ? "検索の言葉を変えてみてください。" : "右上の「新規登録」から追加できます。"}
+                        {q ? "患者番号かひとことの言葉を変えてみてください。"
+                          : "結果が届いたら、右上の「新規登録」から追加できます。"}
                       </div>
                     </div>
                   </>
@@ -372,16 +366,20 @@ export default function Home() {
                         return (
                           <div className="row" key={r.id}>
                             <div className="row-main">
-                              <div className="row-title">{r.name}</div>
+                              <div className="row-title">{r.patient}</div>
                               {r.note && <div className="row-sub">{r.note}</div>}
                             </div>
                             <div className="row-meta">
                               {b && <span className={`badge badge-${b.kind}`}>{b.text}</span>}
-                              {!(LAYOUT === "stage" && filter === "open") && (
-                                <span className="badge">{r.category}</span>
-                              )}
+                              {!r.done && r.missed && <span className="badge badge-danger">不在</span>}
+                              <span className="badge">{r.category}</span>
                               <span className="row-time">{r.date.slice(5).replace("-", "/")}</span>
                               <button className="btn-ghost" onClick={() => startEdit(r)}>編集</button>
+                              {!r.done && (
+                                <button className="btn-ghost" onClick={() => toggleMissed(r.id)}>
+                                  {r.missed ? "不在を消す" : "不在だった"}
+                                </button>
+                              )}
                               <button className="btn-ghost" onClick={() => toggle(r.id)}>
                                 {r.done ? TEXT.toBack : TEXT.toTo}
                               </button>
@@ -402,12 +400,12 @@ export default function Home() {
           {view === "new" && (
             <div className="panel">
               <div className="form-row">
-                <label className="label" htmlFor="f-name">名前<span className="req">必須</span></label>
-                <input id="f-name" className="field" value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                <label className="label" htmlFor="f-patient">患者番号<span className="req">必須</span></label>
+                <input id="f-patient" className="field" value={form.patient}
+                  onChange={(e) => setForm({ ...form, patient: e.target.value })}
                   onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-                  placeholder="例：Aさん（中2）" />
-                <span className="hint">あとで見て誰か分かる書き方にします</span>
+                  placeholder="例：No.10482" />
+                <span className="hint">氏名・電話番号は入れません。患者番号かイニシャルまでにします</span>
               </div>
 
               <div className="form-row">
@@ -428,15 +426,15 @@ export default function Home() {
               </div>
 
               <div className="form-row">
-                <label className="label" htmlFor="f-note">メモ</label>
+                <label className="label" htmlFor="f-note">ひとこと</label>
                 <textarea id="f-note" className="field" value={form.note}
                   onChange={(e) => setForm({ ...form, note: e.target.value })}
-                  placeholder="希望曜日・科目・折り返し時間など" />
+                  placeholder="つながりやすい時間、伝える段取りなど（検査値は書きません）" />
               </div>
 
               <div className="form-actions">
-                <button className="btn" onClick={save} disabled={!form.name.trim()}>
-                  {editing ? "保存する" : "一覧に追加"}
+                <button className="btn" onClick={save} disabled={!form.patient.trim()}>
+                  {editing ? "保存する" : "未連絡の一覧に追加"}
                 </button>
                 <button className="btn-ghost" onClick={() => { resetForm(); setView("list"); }}>やめる</button>
                 <span className="spacer" />
